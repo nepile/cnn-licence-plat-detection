@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>License Plate Detector</title>
+    <style>
+      #stream {
+        width: 640px;
+        height: 480px;
+        border: 1px solid black;
+      }
+      #result {
+        margin-top: 10px;
+        font-size: 18px;
+      }
+      #detectBtn,
+      #uploadBtn {
+        margin-top: 10px;
+        padding: 10px 20px;
+        font-size: 16px;
+      }
+      #fileInput {
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>License Plate Detector</h1>
+    <h2>Detect from ESP32-CAM</h2>
+    <img
+      id="stream"
+      src="http://172.20.10.3:81/stream"
+      alt="ESP32-CAM Stream"
+      crossorigin="anonymous"
+    />
+    <canvas id="canvas" style="display: none"></canvas>
+    <br />
+    <button id="detectBtn">Detect License Plate (Camera)</button>
+
+    <h2>Detect from File</h2>
+    <input type="file" id="fileInput" accept="image/*" />
+    <br />
+    <button id="uploadBtn">Detect License Plate (File)</button>
+
+    <div id="result"></div>
+
+    <script>
+      const streamImg = document.getElementById("stream");
+      const canvas = document.getElementById("canvas");
+      const context = canvas.getContext("2d");
+
+      // Atur ukuran canvas
+      canvas.width = 640;
+      canvas.height = 480;
+
+      // Deteksi dari kamera ESP32-CAM
+      document
+        .getElementById("detectBtn")
+        .addEventListener("click", function () {
+          // Gambar frame dari stream ke canvas
+          context.drawImage(streamImg, 0, 0, canvas.width, canvas.height);
+          const imageData = canvas.toDataURL("image/jpeg");
+
+          fetch("/detect", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ image: imageData }),
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              document.getElementById("result").innerHTML =
+                data.status === "success"
+                  ? `Plate Number: ${data.plate_number}`
+                  : `Error: ${data.message}`;
+            })
+            .catch((error) => {
+              document.getElementById("result").innerHTML = "Error: " + error;
+            });
+        });
+
+      // Deteksi dari file yang diunggah
+      document
+        .getElementById("uploadBtn")
+        .addEventListener("click", function () {
+          const fileInput = document.getElementById("fileInput");
+          const file = fileInput.files[0];
+          if (!file) {
+            document.getElementById("result").innerHTML =
+              "Error: No file selected";
+            return;
+          }
+
+          const formData = new FormData();
+          formData.append("file", file);
+
+          fetch("/upload", {
+            method: "POST",
+            body: formData,
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              document.getElementById("result").innerHTML =
+                data.status === "success"
+                  ? `Plate Number: ${data.plate_number}`
+                  : `Error: ${data.message}`;
+            })
+            .catch((error) => {
+              document.getElementById("result").innerHTML = "Error: " + error;
+            });
+        });
+
+      // Tangani error jika stream tidak dapat dimuat
+      streamImg.onerror = function () {
+        document.getElementById("result").innerHTML =
+          "Error: Cannot connect to ESP32-CAM stream";
+      };
+    </script>
+  </body>
+</html>
