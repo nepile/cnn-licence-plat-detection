@@ -1,0 +1,165 @@
+import cv2  # OpenCV untuk pemrosesan gambar
+import numpy as np  # NumPy untuk operasi array
+import time  # Untuk pengaturan delay dan waktu
+import tensorflow as tf  # TensorFlow untuk deep learning
+from tensorflow.keras.models import load_model  # Untuk memuat model .keras
+from tensorflow.keras.preprocessing.image import img_to_array  # Untuk mengubah gambar menjadi array
+import serial  # Untuk komunikasi dengan Arduino melalui port serial
+
+# Ukuran area ROI (Region of Interest) untuk mendeteksi plat
+ROI_HEIGHT = 300
+ROI_WIDTH = 600
+
+# Inisialisasi port serial untuk komunikasi dengan Arduino
+try:
+    ser = serial.Serial('COM8', 9600, timeout=1)  # Membuka koneksi serial ke COM8 dengan baudrate 9600
+    time.sleep(2)  # Tunggu agar koneksi stabil
+    print(f"Port serial {ser.port} terbuka.")  # Berhasil terhubung
+except serial.SerialException:
+    print("Gagal membuka port serial. Pastikan Arduino terhubung.")  # Gagal membuka koneksi
+    ser = None  # Set null agar tidak error saat akses
+
+# Muat model CNN untuk deteksi karakter plat nomor
+model = load_model('./model/model_detection_v3.keras')
+
+# Daftar label karakter (0-9 dan A-Z) sesuai output model
+class_names = list("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+# Fungsi untuk normalisasi pencahayaan gambar
+def normalize_light(image):
+    img = cv2.resize(image, (int(image.shape[1]*.4), int(image.shape[0]*.4)))  # Resize gambar
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Konversi ke grayscale
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))  # Kernel morfologi
+    img_opening = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel)  # Operasi opening
+    img_norm = gray - img_opening  # Normalisasi pencahayaan
+    _, img_norm_bw = cv2.threshold(img_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)  # Thresholding Otsu
+    return gray, img_norm_bw  # Kembalikan grayscale dan hasil threshold
+
+# Fungsi utama untuk mengenali karakter pada gambar plat nomor
+def recognize_characters(plate_img):
+    gray, plate_img_bw = normalize_light(plate_img)  # Normalisasi gambar
+    kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))  # Kernel morfologi kecil
+    plate_img_bw = cv2.morphologyEx(plate_img_bw, cv2.MORPH_OPEN, kernel)  # Hilangkan noise kecil
+    contours, _ = cv2.findContours(plate_img_bw, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)  # Temukan kontur
+
+    index_chars_candidate = []  # Simpan indeks kontur kandidat karakter
+    index_counter = 0  # Hitungan kontur
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)  # Ambil bounding box
+        aspect_ratio = w / float(h)  # Hitung rasio aspek
+        if 30 <= h <= 80 and w >= 8 and 0.2 <= aspect_ratio <= 1.0:  # Filter ukuran & rasio
+            index_chars_candidate.append(index_counter)  # Tambah kandidat
+        index_counter += 1
+
+    if not index_chars_candidate:
+        return ""  # Jika tidak ada kandidat, kembalikan kosong
+
+    score_chars_candidate = np.zeros(len(index_chars_candidate))  # Skor sejajar karakter
+    for i, charA in enumerate(index_chars_candidate):
+        xA, yA, _, _ = cv2.boundingRect(contours[charA])
+        for charB in index_chars_candidate:
+            if charA == charB:
+                continue
+            xB, yB, _, _ = cv2.boundingRect(contours[charB])
+            if abs(yA - yB) < 11:  # Cek sejajar vertikal
+                score_chars_candidate[i] += 1
+
+    # Ambil karakter dengan skor sejajar tertinggi
+    index_chars = [index_chars_candidate[i] for i, score in enumerate(score_chars_candidate)
+                   if score == max(score_chars_candidate)]
+
+    # Urutkan berdasarkan posisi horizontal (x)
+    x_coords = [(cv2.boundingRect(contours[i])[0], i) for i in index_chars]
+    index_chars_sorted = [i for _, i in sorted(x_coords)]
+
+    plate_number = ""  # Hasil akhir plat
+    for i in index_chars_sorted:
+        x, y, w, h = cv2.boundingRect(contours[i])
+        char_crop = gray[y:y+h, x:x+w]  # Crop karakter
+        char_crop = cv2.resize(char_crop, (40, 40), interpolation=cv2.INTER_CUBIC)  # Resize ke input model
+        char_crop = cv2.equalizeHist(char_crop)  # Tingkatkan kontras
+        char_crop_rgb = cv2.cvtColor(char_crop, cv2.COLOR_GRAY2RGB)  # Ubah ke RGB
+        img_array = img_to_array(char_crop_rgb)  # Ubah ke array
+        img_array = tf.expand_dims(img_array, 0)  # Tambah dimensi batch
+        predictions = model.predict(img_array, verbose=0)  # Prediksi dengan model
+        score = tf.nn.softmax(predictions[0])  # Skor probabilitas
+        max_score = np.max(score)
+        if max_score > 0.9:  # Hanya ambil prediksi dengan kepercayaan tinggi
+            plate_number += class_names[np.argmax(score)]  # Tambah ke hasil plat
+    
+    # Debugging: tampilkan hasil normalisasi dan kotak karakter
+    cv2.imshow("Normalized Image", plate_img_bw)
+    for i in index_chars_sorted:
+        x, y, w, h = cv2.boundingRect(contours[i])
+        cv2.rectangle(plate_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+    # cv2.imshow("Contours", plate_img)
+
+    return plate_number  # Kembalikan teks plat
+
+# Fungsi utama program
+def main():
+    cap = cv2.VideoCapture(0)  # Buka kamera utama
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 600)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 50)
+    if not cap.isOpened():
+        print("Webcam tidak tersedia.")
+        return
+
+    last_detection_time = 0  # Waktu deteksi terakhir
+    detection_delay = 2  # Interval antar deteksi (detik)
+    last_valid_plate = "Terhubung Serial"  # Teks awal
+    last_sent_text = ""  # Cek apakah teks sudah dikirim sebelumnya
+
+    while True:
+        ret, frame = cap.read()  # Ambil frame
+        if not ret:
+            break
+            
+        h, w, _ = frame.shape
+        center_x, center_y = w // 2, h // 2  # Titik tengah frame
+        x1 = center_x - ROI_WIDTH // 2
+        y1 = center_y - ROI_HEIGHT // 2
+        x2 = center_x + ROI_WIDTH // 2
+        y2 = center_y + ROI_HEIGHT // 2
+
+        roi = frame[y1:y2, x1:x2]  # Ambil ROI dari frame
+        result_text = last_valid_plate  # Default hasil
+
+        current_time = time.time()
+        if current_time - last_detection_time >= detection_delay:
+            if roi.size != 0:
+                plate_text = recognize_characters(roi)  # Deteksi karakter
+                if plate_text and len(plate_text) >= 4:  # Validasi panjang hasil
+                    result_text = f"Plat: {plate_text}"
+                    last_valid_plate = result_text
+                    last_detection_time = current_time
+
+        if result_text != last_sent_text:
+            if ser is not None:
+                try:
+                    ser.write(result_text.encode() + b'\n')  # Kirim ke Arduino
+                    ser.flush()
+                    time.sleep(1.8)  # Delay agar Arduino sempat baca
+                    print(f"Mengirim ke Arduino: {result_text}")
+                except serial.SerialException:
+                    print("Gagal mengirim data ke Arduino.")
+            last_sent_text = result_text  # Simpan teks yang dikirim
+
+        # Tampilkan teks hasil deteksi di layar
+        cv2.putText(frame, result_text, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                    (0, 255, 0) if "Plat" in result_text else (0, 0, 255), 2)
+        
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Gambar ROI
+        cv2.imshow("ROI & Countours", roi)  # Tampilkan ROI (debug)
+
+        if cv2.waitKey(1) == 27:  # ESC untuk keluar
+            break
+
+    cap.release()  # Lepaskan kamera
+    cv2.destroyAllWindows()  # Tutup semua jendela
+    if ser is not None:
+        ser.close()  # Tutup koneksi serial
+
+# Jalankan program utama
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,126 @@
+# Import library visualisasi, numerik, dan deep learning
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+
+# Import komponen keras untuk membangun model CNN
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.models import Sequential
+
+# Lokasi dataset karakter (harus berupa folder dengan subfolder per kelas)
+data_dir = r'./dataset/dataset-characters'
+
+# Parameter batch dan ukuran gambar
+batch_size = 32
+img_height = 40
+img_width = 40
+
+# Membuat dataset untuk pelatihan dengan validasi split 20%
+train_ds = tf.keras.preprocessing.image_dataset_from_directory(
+  data_dir,                    # Direktori dataset
+  validation_split=0.2,       # 20% untuk validasi
+  subset="training",          # Ambil subset training
+  seed=123,                   # Seed untuk reproduktibilitas
+  image_size=(img_height, img_width),  # Resize gambar ke 40x40
+  batch_size=batch_size)      # Batch size 32
+
+# Membuat dataset validasi
+val_ds = tf.keras.preprocessing.image_dataset_from_directory(
+  data_dir,
+  validation_split=0.2,
+  subset="validation",        # Ambil subset validasi
+  seed=123,
+  image_size=(img_height, img_width),
+  batch_size=batch_size)
+
+# Menyimpan nama kelas dalam variabel
+class_names = train_ds.class_names
+
+# Konfigurasi agar data diproses efisien
+AUTOTUNE = tf.data.AUTOTUNE
+
+# Cache, shuffle, dan prefetch data training
+train_ds = train_ds.cache().shuffle(1000).prefetch(buffer_size=AUTOTUNE)
+
+# Cache dan prefetch data validasi (tidak perlu shuffle)
+val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
+
+# Layer normalisasi gambar ke [0, 1]
+normalization_layer = layers.Rescaling(1./255)
+
+# Terapkan normalisasi pada dataset training untuk preview
+normalized_ds = train_ds.map(lambda x, y: (normalization_layer(x), y))
+
+# Ambil satu batch gambar dan label untuk diperiksa (opsional/debugging)
+image_batch, labels_batch = next(iter(normalized_ds))
+first_image = image_batch[0]
+
+# Jumlah kelas karakter (0-9 dan A-Z = 36)
+num_classes = 36
+
+# Bangun model CNN dengan arsitektur sederhana
+model = Sequential([
+  layers.Rescaling(1./255, input_shape=(img_height, img_width, 3)), # Normalisasi input
+  layers.Conv2D(16, 3, padding='same', activation='relu'),          # Conv layer 1
+  layers.MaxPooling2D(),                                            # Pooling 1
+  layers.Conv2D(32, 3, padding='same', activation='relu'),          # Conv layer 2
+  layers.MaxPooling2D(),                                            # Pooling 2
+  layers.Conv2D(64, 3, padding='same', activation='relu'),          # Conv layer 3
+  layers.MaxPooling2D(),                                            # Pooling 3
+  layers.Flatten(),                                                 # Flatten ke 1D
+  layers.Dense(128, activation='relu'),                             # FC layer
+  layers.Dense(num_classes)                                         # Output layer (logits)
+])
+
+# Kompilasi model dengan optimizer, loss, dan metric akurasi
+model.compile(optimizer='adam',
+              loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+              metrics=['accuracy'])
+
+# Tampilkan ringkasan arsitektur model
+model.summary()
+
+# Tentukan jumlah epoch
+epochs = 10
+
+# Latih model menggunakan dataset training dan validasi
+history = model.fit(
+  train_ds,
+  validation_data=val_ds,
+  epochs=epochs
+)
+
+# Ambil metrik akurasi dari history training
+acc = history.history['accuracy']
+val_acc = history.history['val_accuracy']
+
+# Ambil metrik loss dari history training
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+
+# Buat range epoch untuk sumbu X grafik
+epochs_range = range(epochs)
+
+# Visualisasi akurasi dan loss selama pelatihan
+plt.figure(figsize=(8, 8))
+
+# Plot akurasi
+plt.subplot(1, 2, 1)
+plt.plot(epochs_range, acc, label='Training Accuracy')
+plt.plot(epochs_range, val_acc, label='Validation Accuracy')
+plt.legend(loc='lower right')
+plt.title('Training and Validation Accuracy')
+
+# Plot loss
+plt.subplot(1, 2, 2)
+plt.plot(epochs_range, loss, label='Training Loss')
+plt.plot(epochs_range, val_loss, label='Validation Loss')
+plt.legend(loc='upper right')
+plt.title('Training and Validation Loss')
+
+# Tampilkan grafik
+plt.show()
+
+# Simpan model yang sudah dilatih ke file `.keras`
+model.save('model/model_detection_v4.keras')

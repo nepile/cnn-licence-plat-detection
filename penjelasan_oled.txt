@@ -1,0 +1,82 @@
+#include "U8glib.h"  // Library untuk mengontrol layar OLED berbasis SSD1306
+
+// Inisialisasi layar OLED 128x64 menggunakan protokol I2C
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_DEV_0 | U8G_I2C_OPT_NO_ACK | U8G_I2C_OPT_FAST);
+
+// Buffer untuk menyimpan teks yang akan ditampilkan di OLED
+char receivedText[32] = "Menunggu Koneksi";  // Default tampilan saat start
+
+// Variabel untuk menampung input dari serial
+String inputString = "";
+bool receiving = false;
+
+// Variabel waktu untuk memantau timeout
+unsigned long lastReceiveTime = 0;
+const unsigned long timeoutDuration = 5000;  // Timeout 5 detik
+unsigned long lastDisplay = 0;
+bool dataBaruDiterima = false;
+
+// Fungsi menggambar teks ke OLED
+void draw(void) {
+  u8g.setFont(u8g_font_unifont);         // Set font OLED
+  u8g.drawStr(0, 22, receivedText);      // Gambar string di koordinat (0,22)
+}
+
+// Setup awal Arduino
+void setup(void) {
+  Serial.begin(9600);                    // Inisialisasi komunikasi Serial
+  Serial.setTimeout(100);               // Timeout baca serial 100ms
+
+  // Konfigurasi warna/kontras OLED sesuai mode layar
+  if (u8g.getMode() == U8G_MODE_R3G3B2) {
+    u8g.setColorIndex(255);
+  } else if (u8g.getMode() == U8G_MODE_GRAY2BIT) {
+    u8g.setColorIndex(3);
+  } else if (u8g.getMode() == U8G_MODE_BW) {
+    u8g.setColorIndex(1);
+  } else if (u8g.getMode() == U8G_MODE_HICOLOR) {
+    u8g.setHiColorByRGB(255, 255, 255);
+  }
+
+  pinMode(8, OUTPUT);                    // Set pin 8 sebagai output (jika nanti digunakan)
+  lastReceiveTime = millis();            // Catat waktu awal
+}
+
+// Loop utama Arduino
+void loop(void) {
+  // Baca data dari serial jika ada
+  while (Serial.available()) {
+    char c = Serial.read();             // Baca satu karakter
+    if (c == '\n') {                    // Jika akhir baris (newline)
+      receiving = false;
+      inputString.trim();              // Hilangkan spasi/tanda newline di ujung
+      inputString.toCharArray(receivedText, sizeof(receivedText)); // Konversi ke char array
+      Serial.print("Diterima: ");
+      Serial.println(receivedText);    // Tampilkan balik di serial monitor
+      lastReceiveTime = millis();      // Reset waktu timeout
+      dataBaruDiterima = true;         // Tandai bahwa data baru sudah diterima
+      inputString = "";                // Reset buffer string input
+    } else {
+      inputString += c;                // Tambahkan karakter ke buffer
+      receiving = true;
+    }
+  }
+
+  // Update tampilan OLED setiap 100ms
+  if (millis() - lastDisplay > 100) {
+    u8g.firstPage();
+    do {
+      draw();                           // Gambar teks terbaru
+    } while (u8g.nextPage());
+    lastDisplay = millis();            // Catat waktu update terakhir
+  }
+
+  // Reset tampilan jika tidak ada data baru selama 5 detik
+  if (millis() - lastReceiveTime > timeoutDuration && dataBaruDiterima) {
+    Serial.println("Timeout: Kembali ke 'Menunggu...'");
+    strcpy(receivedText, "Menunggu...");  // Reset tampilan OLED
+    dataBaruDiterima = false;
+  }
+
+  delay(2000);  // Delay 2 detik (disarankan untuk dikurangi jika ingin respons lebih cepat)
+}
